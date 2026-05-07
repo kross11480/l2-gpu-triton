@@ -42,11 +42,6 @@ jupyter lab l2-triton_matmul.ipynb
 ```
 
 
-```
-
----
-
-
 ## Tasks
 
 | # | Topic | What you do |
