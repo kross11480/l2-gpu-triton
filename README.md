@@ -1,77 +1,85 @@
-# Triton GEMM & 1×1 Convolution Lab
+# Praktikum 3: GPU Programming in Triton
 
-A GPU programming lab implemented as a single Jupyter notebook (`l2-triton_matmul.ipynb`) that builds an optimized matrix-multiplication kernel in [Triton](https://github.com/triton-lang/triton), reuses it for 1×1 convolution, and benchmarks both against cuBLAS/cuDNN.
+A lab template for the AIA Master's course. You will implement an optimised matrix multiplication on a GPU using [Triton](https://github.com/triton-lang/triton), benchmark it against cuBLAS, and analyse the result with the SIMT execution model in mind.
 
-**Requires a CUDA GPU.** The notebook cannot run on macOS or CPU-only machines.
+> **Requires a CUDA GPU.** The notebook does not run on macOS or CPU-only machines. Use Google Colab, Kaggle, the EFI GPU cluster, or a local NVIDIA workstation.
 
-## Aims
+---
 
-1. Write an optimized matrix multiplication on GPU using Triton.
-2. Reuse that kernel to implement a **1×1 convolution** — the dominant op in depthwise-separable CNNs (MobileNet-v1, EfficientNet, etc.).
-3. Benchmark throughput against `torch.matmul` (cuBLAS) and `torch.nn.functional.conv2d` (cuDNN).
+## Learning objectives
+
+After completing this lab you should be able to:
+
+1. Explain the **SIMT execution model**: programs, warps, threads, and how a Triton kernel is mapped onto streaming multiprocessors.
+2. **Implement** Triton kernels that progressively unlock GPU performance: scalar → vectorised → tiled.
+3. **Benchmark and analyse** kernel performance — wall-clock time, GFLOPS, occupancy, arithmetic intensity, throttling.
+4. **Profile** a kernel using `torch.profiler` and read a Perfetto/Nsight trace.
+
+---
 
 ## Setup
 
-### Platforms
+### Option A — Google Colab
 
-| Platform | GPU | How to enable |
-|---|---|---|
-| Google Colab | free T4 | Runtime → Change runtime type → GPU |
-| Kaggle Notebooks | free T4 / P100 | Settings → Accelerator → GPU |
-| Local CUDA box | any NVIDIA | see below |
+1. Open <https://colab.research.google.com>, **File → Upload notebook**, choose `l2-triton_matmul.ipynb`.
+2. **Runtime → Change runtime type → Hardware accelerator: GPU** (T4 is fine).
+3. Run the first cell — it installs Triton and prints `cuda:0`.
 
-### Local installation (CUDA 12.4)
+### Option B — Kaggle Notebooks
+
+1. Create a new notebook on <https://kaggle.com>, **File → Upload Notebook**.
+2. **Settings → Accelerator → GPU T4 x1** (or P100).
+3. Run the first cell.
+
+### Option C — Local CUDA workstation or EFI Cluster
 
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu124
-pip install triton torchprofile -q
-conda install -c nvidia nsight-compute -y
-export PATH=/opt/conda/nsight-compute/2024.1.1/target/linux-desktop-glibc_2_11_3-x64/:$PATH
+git clone <this-repo-url> l2-gpu-triton
+cd l2-gpu-triton
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+jupyter lab l2-triton_matmul.ipynb
 ```
 
-The first notebook cell installs dependencies and confirms the device:
 
-```python
-!pip install triton torchprofile -q
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
-print(DEVICE)  # should print: cuda
 ```
 
-## Architecture
+---
 
-### Kernels (`@triton.jit`)
 
-| Kernel | Grid shape | What it computes |
+## Tasks
+
+| # | Topic | What you do |
 |---|---|---|
-| `simple_matmul_kernel` | `(N, N)` — one thread per output element | Naive scalar matmul, no tiling |
-| `simple_tiled_matmul_kernel` | `(N//BLOCK)²` flat 1-D grid | Tiled matmul; `BLOCK` is a `tl.constexpr` |
+| **1** | GPU characterisation | Print device properties and derive **peak FP32** from first principles. |
+| **2** | Naive matmul analysis | Reason about the given `simple_matmul_kernel`: number of programs, loads/stores, FLOPs, arithmetic intensity. |
+| **3** | Naive benchmark | Measure wall-time and GFLOPS at `N=1024`. Compare to peak. Explain the gap using `kernel_info`. |
+| **4** | Vectorised kernel | **Implement** `naive_matmul_kernel` with a vectorised K-loop using `tl.arange` + `tl.sum`. Benchmark the speed-up. |
+| **5** | Tiled kernel | **Implement** `simple_tiled_matmul_kernel` using `tl.dot` for block-level GEMM. Compute its arithmetic intensity. |
+| **6** | Block-size sweep | Sweep `BLOCK ∈ {16, 32, 64, 128, ...}`. Find the value that fails (and why), and the value that's fastest. |
+| **7** | Throughput sweep | Use `triton.testing.perf_report` to compare your tiled kernel against `torch.matmul` (cuBLAS) over `N ∈ [256, 4096]`. |
+| **8** | Profiling | Use `torch.profiler` to capture a trace, open it in [Perfetto](https://ui.perfetto.dev), and answer the analysis questions. |
 
-Key Triton patterns used:
-- `tl.program_id(axis)` — block-index computation
-- `tl.arange(0, BLOCK)` + broadcasting — tile pointer arithmetic
-- `tl.dot(a, b)` — tile-level GEMM (maps to tensor cores when available)
-- `tl.zeros((BLOCK, BLOCK), dtype=tl.float32)` — accumulator
+The full task descriptions, all sub-questions, and the deliverables live inside the notebook itself.
 
-### Benchmarking utilities
+---
 
-- `bench(fn, warmup, reps)` — mean GPU wall-clock time in ms
-- `gflops(N, ms)` / `gflops_gemm(M, N, K, ms)` — compute throughput
-- `kernel_info(jit_fn)` — extracts register count, shared memory, warp count, and pipeline stages from the Triton compiled-kernel cache
-- `triton.testing.perf_report` / `do_bench` — official Triton benchmark harness for the final TFLOPS comparison plot
+## Evaluation
 
-### Unit testing
+Your submission will be assessed on:
 
-Correctness is verified with `torch.testing.assert_close` against `torch.matmul`. Tolerances are loose (`atol=1e-1, rtol=1e-2`) because FP32 tile accumulation introduces numerical drift.
+- **Correctness** of the two kernels you implement (Tasks 4 & 5) — verified against `torch.matmul` with `torch.testing.assert_close`.
+- **Quality of the analysis answers** in markdown cells — does the explanation follow from the SIMT execution model and the GPU's resource limits, or is it just numbers?
+- **Benchmark plots and reasoning** — Tasks 3, 6, 7 expect numbers + an interpretation.
+- **Profiler trace** — a screenshot or short paragraph describing what you saw.
+- **Team presentation** — short walkthrough of your kernels, your benchmark plot, and one surprise/insight.
 
-## Key Parameters
+Submit the completed notebook (with all cells executed and outputs intact) plus any extra figures you reference.
 
-| Parameter | Default | Notes |
-|---|---|---|
-| `BLOCK` | `64` | Tile size (power of 2). Values beyond ~128 may exceed shared-memory capacity. |
-| `num_warps` | `4` | Best occupancy on T4/V100 for `BLOCK=64`. |
-| Matrix sizes | `256*i, i∈[2,15]` | Sweep used in benchmarks. |
 
-## Notes
+## References
 
-- Output tensors accumulate in FP32 internally; final results can be cast to FP16 as needed.
-- Nsight profiling (`ncu`) may be locked on shared GPU clusters — use a personal device (e.g. Jetson, local workstation) for detailed profiling.
+- [Triton tutorial — matrix multiplication](https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html)
+- [Triton language reference](https://triton-lang.org/main/python-api/triton.language.html)
+- [NVIDIA CUDA C Programming Guide — execution model](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#programming-model)
+- [Roofline performance model (Williams, Waterman, Patterson, 2009)](https://dl.acm.org/doi/10.1145/1498765.1498785)
